@@ -20,6 +20,7 @@
     {
       "binding": "DB",
       "database_name": "momojiru-memory",
+      "database_id": "4add463f-02bd-4fdf-81c3-1032a9ee261f",
       "migrations_dir": "migrations"
     }
   ],
