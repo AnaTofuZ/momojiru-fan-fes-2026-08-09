@@ -40,6 +40,9 @@ h1 { margin: .4rem 0 1rem; font-size: clamp(2.25rem, 8vw, 4.25rem); line-height:
 .watch { margin-top: auto; color: var(--deep); font-weight: 800; }
 .author { display: flex; align-items: center; gap: .45rem; margin-top: .7rem; color: #806f70; }
 .author img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
+.like { min-height: 38px; margin-top: .75rem; padding: .45rem .75rem; color: var(--deep); background: #ffe5db; }
+.like:active { transform: scale(1.08); }
+.like-message { margin-top: .4rem; color: #8a3030; }
 .card-actions { display: flex; width: 100%; gap: .5rem; margin-top: 1rem; }
 .card-actions button { flex: 1; }
 .secondary { border: 1px solid #d9c2bc; color: var(--deep); background: white; }
@@ -71,7 +74,7 @@ input:focus, select:focus, textarea:focus { outline: 3px solid #f6b3a880; border
 .memory-sky { position: relative; height: min(68vh, 650px); min-height: 500px; margin: 2rem 0; overflow: hidden; border: 1px solid #eadbd0; border-radius: 32px; background: radial-gradient(circle at 20% 20%, #ffd9cf 0 3px, transparent 4px), radial-gradient(circle at 80% 60%, #f3a698 0 2px, transparent 3px), linear-gradient(155deg, #fff8ed, #fce3df); background-size: 120px 130px, 160px 150px, auto; }
 .memory-sky svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .memory-sky line { stroke: #dba8a2; stroke-width: .22; opacity: .55; vector-effect: non-scaling-stroke; }
-.memory-node { position: absolute; display: grid; width: clamp(88px, 15vw, 150px); min-height: 72px; padding: .7rem; place-content: center; border: 2px solid #fff9; border-radius: 50%; color: #572f35; background: #ffd2c7e8; box-shadow: 0 8px 22px #6b384324; line-height: 1.25; transform: translate(-50%, -50%); animation: memory-float 8s ease-in-out infinite alternate; }
+.memory-node { position: absolute; display: grid; width: clamp(88px, calc(88px + var(--likes) * 3px), 148px); min-height: clamp(72px, calc(72px + var(--likes) * 2px), 112px); padding: .7rem; place-content: center; border: 2px solid #fff9; border-radius: 50%; color: #572f35; background: #ffd2c7e8; box-shadow: 0 8px 22px #6b384324; line-height: 1.25; transform: translate(-50%, -50%); animation: memory-float 8s ease-in-out infinite alternate; transition: width .2s, min-height .2s; }
 .memory-node small { display: block; margin-bottom: .2rem; font-size: .62rem; opacity: .75; }
 .memory-node span { display: -webkit-box; overflow: hidden; font-size: .75rem; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .memory-node.member-1 { background: #ffe3b8e8; }
@@ -95,5 +98,5 @@ footer { margin-top: 5rem; padding: 2.5rem 1rem; text-align: center; color: #816
   .token { grid-template-columns: 1fr; }
   .moment-form { padding: 1rem; }
   .memory-sky { min-height: 540px; border-radius: 20px; }
-  .memory-node { width: 92px; min-height: 68px; }
+  .memory-node { max-width: 130px; }
 }

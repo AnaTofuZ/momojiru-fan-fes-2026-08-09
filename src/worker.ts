@@ -7,6 +7,7 @@ import type { Context } from 'hono'
 import { turnstileValid, type TurnstileResult } from './turnstile'
 import { youtubeSeconds } from './youtube'
 import { sessionHash } from './session'
+import { likeAllowed, type LikeTarget } from './likes'
 
 type Bindings = Env & { TURNSTILE_SECRET?: string }
 type MomentInput = {
@@ -19,6 +20,7 @@ type MomentInput = {
   tags: string[]
   authorName: string
   authorAvatarKey: string
+  profileId: number | null
   imageKey: string
   status: 'draft' | 'published'
 }
@@ -46,7 +48,7 @@ const imageBody = bodyLimit({ maxSize: 5 * 1024 * 1024 + 64 * 1024 })
 app.use('/api/*', (c, next) => ['/api/admin/images', '/api/profile', '/api/moments'].includes(c.req.path) ? imageBody(c, next) : smallBody(c, next))
 
 app.onError((error, c) => {
-  if (error instanceof HTTPException) return error.getResponse()
+  if (error instanceof HTTPException) return c.json({ error: error.message }, error.status)
   console.error(JSON.stringify({ message: 'request failed', error: error instanceof Error ? error.message : String(error), path: c.req.path }))
   return c.json({ error: '処理に失敗しました' }, 500)
 })
@@ -97,6 +99,7 @@ async function input(request: Request, admin: boolean): Promise<MomentInput> {
     tags,
     authorName: text(data.authorName, 50),
     authorAvatarKey: text(data.authorAvatarKey, 100),
+    profileId: null,
     imageKey: text(data.imageKey, 100),
     status: admin && data.status === 'draft' ? 'draft' : 'published',
   }
@@ -123,7 +126,7 @@ async function verifyTurnstile(c: Context<{ Bindings: Bindings }>, token: string
   }
 }
 
-const columns = 'id, kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, image_key, status, created_at, updated_at'
+const columns = 'id, kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, profile_id, image_key, likes_count, status, created_at, updated_at'
 
 function moment(row: Record<string, unknown>) {
   let tags: string[] = []
@@ -139,7 +142,9 @@ function moment(row: Record<string, unknown>) {
     tags,
     authorName: row.author_name,
     authorAvatarKey: row.author_avatar_key,
+    profileId: row.profile_id,
     imageKey: row.image_key,
+    likesCount: row.likes_count,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -152,9 +157,9 @@ async function find(db: D1Database, id: number) {
 }
 
 async function insert(db: D1Database, data: MomentInput) {
-  const result = await db.prepare(`INSERT INTO moments (kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, image_key, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.authorAvatarKey, data.imageKey, data.status).run()
+  const result = await db.prepare(`INSERT INTO moments (kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, profile_id, image_key, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.authorAvatarKey, data.profileId, data.imageKey, data.status).run()
   return find(db, Number(result.meta.last_row_id))
 }
 
@@ -180,9 +185,9 @@ const sessionCookie = 'momoshimin_session'
 async function profile(c: Context<{ Bindings: Bindings }>) {
   const token = getCookie(c, sessionCookie)
   if (!token) return null
-  const row = await c.env.DB.prepare('SELECT display_name, avatar_key FROM profiles WHERE session_hash = ?')
-    .bind(await sessionHash(token)).first<{ display_name: string, avatar_key: string }>()
-  return row ? { displayName: row.display_name, avatarKey: row.avatar_key } : null
+  const row = await c.env.DB.prepare('SELECT id, display_name, avatar_key FROM profiles WHERE session_hash = ?')
+    .bind(await sessionHash(token)).first<{ id: number, display_name: string, avatar_key: string }>()
+  return row ? { id: row.id, displayName: row.display_name, avatarKey: row.avatar_key } : null
 }
 
 app.get('/api/profile', async (c) => c.json({ profile: await profile(c) }))
@@ -241,9 +246,25 @@ app.post('/api/moments', async (c) => {
   const data = await input(new Request('https://internal', { method: 'POST', body: payload }), false)
   data.authorName = memberProfile.displayName
   data.authorAvatarKey = memberProfile.avatarKey
+  data.profileId = memberProfile.id
   const file = form.get('image')
   if (file instanceof File && file.size) data.imageKey = await storeImage(c.env.IMAGES, file)
   return c.json(await insert(c.env.DB, data), 201)
+})
+
+app.post('/api/moments/:id/likes', async (c) => {
+  const id = Number(c.req.param('id'))
+  if (!Number.isInteger(id)) throw new HTTPException(400, { message: 'IDが不正です' })
+  const memberProfile = await profile(c)
+  if (!memberProfile) throw new HTTPException(401, { message: '参加登録するといいねできます' })
+  const target = await c.env.DB.prepare(`SELECT kind, status,
+    EXISTS(SELECT 1 FROM moments authored WHERE authored.profile_id = ? AND authored.status = 'published') AS eligible
+    FROM moments WHERE id = ?`).bind(memberProfile.id, id).first<LikeTarget>()
+  if (!target || target.kind !== 'moment' || target.status !== 'published') throw new HTTPException(404, { message: '好きな瞬間が見つかりません' })
+  if (!likeAllowed(target)) throw new HTTPException(403, { message: '思い出を1件投稿するといいねできます' })
+  await c.env.DB.prepare('UPDATE moments SET likes_count = likes_count + 1 WHERE id = ?').bind(id).run()
+  const row = await c.env.DB.prepare('SELECT likes_count FROM moments WHERE id = ?').bind(id).first<{ likes_count: number }>()
+  return c.json({ likesCount: row?.likes_count ?? 0 })
 })
 
 app.get('/api/admin/moments', async (c) => {

@@ -1,6 +1,7 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { type CSSProperties, FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { clock, youtubeSeconds } from './youtube'
+import { starBoost } from './likes'
 
 type Moment = {
   id: number
@@ -13,14 +14,16 @@ type Moment = {
   tags: string[]
   authorName: string
   authorAvatarKey: string
+  profileId: number | null
   imageKey: string
+  likesCount: number
   status: 'draft' | 'published'
   createdAt: string
 }
 
 type FormValue = Omit<Moment, 'id' | 'createdAt'>
 type Profile = { displayName: string, avatarKey: string }
-const empty: FormValue = { kind: 'moment', member: 'ほうとう組。', title: '', body: '', sourceUrl: '', timestampSeconds: null, tags: [], authorName: '', authorAvatarKey: '', imageKey: '', status: 'published' }
+const empty: FormValue = { kind: 'moment', member: 'ほうとう組。', title: '', body: '', sourceUrl: '', timestampSeconds: null, tags: [], authorName: '', authorAvatarKey: '', profileId: null, imageKey: '', likesCount: 0, status: 'published' }
 const members = ['ほうとう組。', 'ボス', '司令官', '宝灯桃汁']
 const turnstileSitekey = '0x4AAAAAAEKTlDueM9B_l4qU'
 
@@ -46,7 +49,19 @@ function Header() {
   </header>
 }
 
-function MomentCard({ item, admin, onEdit, onDelete }: { item: Moment, admin?: boolean, onEdit?: () => void, onDelete?: () => void }) {
+function MomentCard({ item, admin, onEdit, onDelete, onLiked }: { item: Moment, admin?: boolean, onEdit?: () => void, onDelete?: () => void, onLiked?: (likes: number) => void }) {
+  const [likes, setLikes] = useState(item.likesCount)
+  const [likeMessage, setLikeMessage] = useState('')
+  useEffect(() => setLikes(item.likesCount), [item.likesCount])
+  async function like() {
+    setLikeMessage(''); setLikes(count => count + 1)
+    try {
+      const result = await request<{ likesCount: number }>(`/api/moments/${item.id}/likes`, { method: 'POST' })
+      setLikes(count => Math.max(count, result.likesCount)); onLiked?.(result.likesCount)
+    } catch (e) {
+      setLikes(count => Math.max(0, count - 1)); setLikeMessage((e as Error).message)
+    }
+  }
   return <article className="moment-card">
     <div className="card-top"><span className="member">{item.member}</span>{admin && <span className={`status ${item.status}`}>{item.status === 'draft' ? '下書き' : '公開'}</span>}</div>
     <h3>{item.title || (item.kind === 'quote' ? '名言・迷言' : '好きな瞬間')}</h3>
@@ -55,6 +70,8 @@ function MomentCard({ item, admin, onEdit, onDelete }: { item: Moment, admin?: b
     {!!item.tags.length && <div className="tags">{item.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
     {item.sourceUrl && <a className="watch" href={item.sourceUrl} target="_blank" rel="noreferrer">↗ 元の投稿・場面を見る{item.timestampSeconds !== null && `（${clock(item.timestampSeconds)}）`}</a>}
     {item.authorName && <div className="author">{item.authorAvatarKey && <img src={`/media/${item.authorAvatarKey}`} alt="" loading="lazy" />}<small>投稿: {item.authorName}</small></div>}
+    {!admin && item.kind === 'moment' && <button className="like" onClick={() => void like()} aria-label={`いいね、現在${likes}件`}>♡ いいね {likes}</button>}
+    {likeMessage && <small className="like-message" role="status">{likeMessage}</small>}
     {admin && <div className="card-actions"><button className="secondary" onClick={onEdit}>編集</button><button className="danger" onClick={onDelete}>削除</button></div>}
   </article>
 }
@@ -214,13 +231,16 @@ function MemoryMap() {
       {nodes.map((node, index) => <button
         className={`memory-node member-${members.indexOf(node.item.member)}`}
         key={node.item.id}
-        style={{ left: `${node.x}%`, top: `${node.y}%`, animationDelay: `${-(index % 8)}s` }}
+        style={{ left: `${node.x}%`, top: `${node.y}%`, animationDelay: `${-(index % 8)}s`, '--likes': starBoost(node.item.likesCount) } as CSSProperties}
         onClick={() => setSelected(node.item)}
         aria-label={`${node.item.member}: ${node.item.title || node.item.body || '思い出'}`}
-      ><small>{node.item.member}</small><span>{node.item.title || node.item.body || '思い出'}</span></button>)}
+      ><small>{node.item.member} · ♡ {node.item.likesCount}</small><span>{node.item.title || node.item.body || '思い出'}</span></button>)}
       {!nodes.length && !error && <p className="sky-empty">投稿が集まると、ここに思い出の星が浮かびます。</p>}
     </div>
-    {selected && <div className="selected-memory"><MomentCard item={selected} /></div>}
+    {selected && <div className="selected-memory"><MomentCard item={selected} onLiked={likes => {
+      setMoments(items => items.map(item => item.id === selected.id ? { ...item, likesCount: likes } : item))
+      setSelected(item => item ? { ...item, likesCount: likes } : item)
+    }} /></div>}
   </section>
 }
 
