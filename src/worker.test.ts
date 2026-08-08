@@ -15,7 +15,7 @@ test('Turnstile requires success, the expected action, and the production hostna
 test('likes require a published moment and a profile with a prior post', () => {
   assert.equal(likeAllowed({ kind: 'moment', status: 'published', eligible: 1 }), true)
   assert.equal(likeAllowed({ kind: 'moment', status: 'published', eligible: 0 }), false)
-  assert.equal(likeAllowed({ kind: 'quote', status: 'published', eligible: 1 }), false)
+  assert.equal(likeAllowed({ kind: 'quote', status: 'published', eligible: 1 }), true)
   assert.equal(starBoost(100), 20)
 })
 

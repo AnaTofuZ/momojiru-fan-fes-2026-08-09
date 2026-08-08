@@ -260,7 +260,7 @@ app.post('/api/moments/:id/likes', async (c) => {
   const target = await c.env.DB.prepare(`SELECT kind, status,
     EXISTS(SELECT 1 FROM moments authored WHERE authored.profile_id = ? AND authored.status = 'published') AS eligible
     FROM moments WHERE id = ?`).bind(memberProfile.id, id).first<LikeTarget>()
-  if (!target || target.kind !== 'moment' || target.status !== 'published') throw new HTTPException(404, { message: '好きな瞬間が見つかりません' })
+  if (!target || target.status !== 'published') throw new HTTPException(404, { message: '投稿が見つかりません' })
   if (!likeAllowed(target)) throw new HTTPException(403, { message: '思い出を1件投稿するといいねできます' })
   await c.env.DB.prepare('UPDATE moments SET likes_count = likes_count + 1 WHERE id = ?').bind(id).run()
   const row = await c.env.DB.prepare('SELECT likes_count FROM moments WHERE id = ?').bind(id).first<{ likes_count: number }>()

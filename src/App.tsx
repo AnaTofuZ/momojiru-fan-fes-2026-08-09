@@ -70,7 +70,7 @@ function MomentCard({ item, admin, onEdit, onDelete, onLiked }: { item: Moment, 
     {!!item.tags.length && <div className="tags">{item.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
     {item.sourceUrl && <a className="watch" href={item.sourceUrl} target="_blank" rel="noreferrer">↗ 元の投稿・場面を見る{item.timestampSeconds !== null && `（${clock(item.timestampSeconds)}）`}</a>}
     {item.authorName && <div className="author">{item.authorAvatarKey && <img src={`/media/${item.authorAvatarKey}`} alt="" loading="lazy" />}<small>投稿: {item.authorName}</small></div>}
-    {!admin && item.kind === 'moment' && <button className="like" onClick={() => void like()} aria-label={`いいね、現在${likes}件`}>♡ いいね {likes}</button>}
+    {!admin && <button className="like" onClick={() => void like()} aria-label={`いいね、現在${likes}件`}>♡ いいね {likes}</button>}
     {likeMessage && <small className="like-message" role="status">{likeMessage}</small>}
     {admin && <div className="card-actions"><button className="secondary" onClick={onEdit}>編集</button><button className="danger" onClick={onDelete}>削除</button></div>}
   </article>
