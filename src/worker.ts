@@ -2,9 +2,11 @@ import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
 import { HTTPException } from 'hono/http-exception'
 import { secureHeaders } from 'hono/secure-headers'
+import { getCookie, setCookie } from 'hono/cookie'
 import type { Context } from 'hono'
 import { turnstileValid, type TurnstileResult } from './turnstile'
 import { youtubeSeconds } from './youtube'
+import { sessionHash } from './session'
 
 type Bindings = Env & { TURNSTILE_SECRET?: string }
 type MomentInput = {
@@ -16,6 +18,7 @@ type MomentInput = {
   timestampSeconds: number | null
   tags: string[]
   authorName: string
+  authorAvatarKey: string
   imageKey: string
   status: 'draft' | 'published'
 }
@@ -40,7 +43,7 @@ app.use('*', secureHeaders({
 }))
 const smallBody = bodyLimit({ maxSize: 16 * 1024 })
 const imageBody = bodyLimit({ maxSize: 5 * 1024 * 1024 + 64 * 1024 })
-app.use('/api/*', (c, next) => ['/api/admin/images', '/api/moments'].includes(c.req.path) ? imageBody(c, next) : smallBody(c, next))
+app.use('/api/*', (c, next) => ['/api/admin/images', '/api/profile', '/api/moments'].includes(c.req.path) ? imageBody(c, next) : smallBody(c, next))
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return error.getResponse()
@@ -93,12 +96,13 @@ async function input(request: Request, admin: boolean): Promise<MomentInput> {
     timestampSeconds: suppliedSeconds ?? youtubeSeconds(sourceUrl),
     tags,
     authorName: text(data.authorName, 50),
+    authorAvatarKey: text(data.authorAvatarKey, 100),
     imageKey: text(data.imageKey, 100),
     status: admin && data.status === 'draft' ? 'draft' : 'published',
   }
 }
 
-async function verifyTurnstile(c: Context<{ Bindings: Bindings }>, token: string) {
+async function verifyTurnstile(c: Context<{ Bindings: Bindings }>, token: string, action = 'submit_moment') {
   if (!c.env.TURNSTILE_SECRET) throw new HTTPException(503, { message: '投稿認証が未設定です' })
   const form = new FormData()
   form.set('secret', c.env.TURNSTILE_SECRET)
@@ -114,12 +118,12 @@ async function verifyTurnstile(c: Context<{ Bindings: Bindings }>, token: string
   } catch {
     throw new HTTPException(503, { message: '投稿認証に失敗しました。もう一度お試しください' })
   }
-  if (!turnstileValid(result, c.env.TURNSTILE_HOSTNAME)) {
+  if (!turnstileValid(result, c.env.TURNSTILE_HOSTNAME, action)) {
     throw new HTTPException(403, { message: '投稿認証に失敗しました。もう一度お試しください' })
   }
 }
 
-const columns = 'id, kind, member, title, body, source_url, timestamp_seconds, tags, author_name, image_key, status, created_at, updated_at'
+const columns = 'id, kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, image_key, status, created_at, updated_at'
 
 function moment(row: Record<string, unknown>) {
   let tags: string[] = []
@@ -134,6 +138,7 @@ function moment(row: Record<string, unknown>) {
     timestampSeconds: row.timestamp_seconds,
     tags,
     authorName: row.author_name,
+    authorAvatarKey: row.author_avatar_key,
     imageKey: row.image_key,
     status: row.status,
     createdAt: row.created_at,
@@ -147,9 +152,9 @@ async function find(db: D1Database, id: number) {
 }
 
 async function insert(db: D1Database, data: MomentInput) {
-  const result = await db.prepare(`INSERT INTO moments (kind, member, title, body, source_url, timestamp_seconds, tags, author_name, image_key, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.imageKey, data.status).run()
+  const result = await db.prepare(`INSERT INTO moments (kind, member, title, body, source_url, timestamp_seconds, tags, author_name, author_avatar_key, image_key, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.authorAvatarKey, data.imageKey, data.status).run()
   return find(db, Number(result.meta.last_row_id))
 }
 
@@ -169,6 +174,33 @@ async function storeImage(bucket: R2Bucket, file: File) {
   await bucket.put(key, data, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } })
   return key
 }
+
+const sessionCookie = 'momoshimin_session'
+
+async function profile(c: Context<{ Bindings: Bindings }>) {
+  const token = getCookie(c, sessionCookie)
+  if (!token) return null
+  const row = await c.env.DB.prepare('SELECT display_name, avatar_key FROM profiles WHERE session_hash = ?')
+    .bind(await sessionHash(token)).first<{ display_name: string, avatar_key: string }>()
+  return row ? { displayName: row.display_name, avatarKey: row.avatar_key } : null
+}
+
+app.get('/api/profile', async (c) => c.json({ profile: await profile(c) }))
+
+app.post('/api/profile', async (c) => {
+  const form = await c.req.formData()
+  await verifyTurnstile(c, text(form.get('turnstileToken'), 2048), 'register_profile')
+  const displayName = text(form.get('displayName'), 50)
+  const avatar = form.get('avatar')
+  if (!displayName) throw new HTTPException(400, { message: '表示名を入力してください' })
+  if (!(avatar instanceof File) || !avatar.size) throw new HTTPException(400, { message: 'アイコン画像を選択してください' })
+  const avatarKey = await storeImage(c.env.IMAGES, avatar)
+  const token = crypto.randomUUID()
+  await c.env.DB.prepare('INSERT INTO profiles (display_name, avatar_key, session_hash) VALUES (?, ?, ?)')
+    .bind(displayName, avatarKey, await sessionHash(token)).run()
+  setCookie(c, sessionCookie, token, { httpOnly: true, secure: true, sameSite: 'Strict', path: '/', maxAge: 60 * 60 * 24 * 365 })
+  return c.json({ profile: { displayName, avatarKey } }, 201)
+})
 
 app.post('/api/admin/images', async (c) => {
   const file = (await c.req.formData()).get('image')
@@ -203,8 +235,12 @@ app.get('/api/moments/random', async (c) => {
 app.post('/api/moments', async (c) => {
   const form = await c.req.formData()
   await verifyTurnstile(c, text(form.get('turnstileToken'), 2048))
+  const memberProfile = await profile(c)
+  if (!memberProfile) throw new HTTPException(401, { message: '先に参加登録してください' })
   const payload = text(form.get('payload'), 16 * 1024)
   const data = await input(new Request('https://internal', { method: 'POST', body: payload }), false)
+  data.authorName = memberProfile.displayName
+  data.authorAvatarKey = memberProfile.avatarKey
   const file = form.get('image')
   if (file instanceof File && file.size) data.imageKey = await storeImage(c.env.IMAGES, file)
   return c.json(await insert(c.env.DB, data), 201)
@@ -221,8 +257,8 @@ app.put('/api/admin/moments/:id', async (c) => {
   const id = Number(c.req.param('id'))
   if (!Number.isInteger(id)) throw new HTTPException(400, { message: 'IDが不正です' })
   const data = await input(c.req.raw, true)
-  const result = await c.env.DB.prepare(`UPDATE moments SET kind = ?, member = ?, title = ?, body = ?, source_url = ?, timestamp_seconds = ?, tags = ?, author_name = ?, image_key = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.imageKey, data.status, id).run()
+  const result = await c.env.DB.prepare(`UPDATE moments SET kind = ?, member = ?, title = ?, body = ?, source_url = ?, timestamp_seconds = ?, tags = ?, author_name = ?, author_avatar_key = ?, image_key = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    .bind(data.kind, data.member, data.title, data.body, data.sourceUrl, data.timestampSeconds, JSON.stringify(data.tags), data.authorName, data.authorAvatarKey, data.imageKey, data.status, id).run()
   if (!result.meta.changes) throw new HTTPException(404, { message: '思い出が見つかりません' })
   return c.json(await find(c.env.DB, id))
 })

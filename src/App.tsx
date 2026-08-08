@@ -12,13 +12,15 @@ type Moment = {
   timestampSeconds: number | null
   tags: string[]
   authorName: string
+  authorAvatarKey: string
   imageKey: string
   status: 'draft' | 'published'
   createdAt: string
 }
 
 type FormValue = Omit<Moment, 'id' | 'createdAt'>
-const empty: FormValue = { kind: 'moment', member: 'ほうとう組。', title: '', body: '', sourceUrl: '', timestampSeconds: null, tags: [], authorName: '', imageKey: '', status: 'published' }
+type Profile = { displayName: string, avatarKey: string }
+const empty: FormValue = { kind: 'moment', member: 'ほうとう組。', title: '', body: '', sourceUrl: '', timestampSeconds: null, tags: [], authorName: '', authorAvatarKey: '', imageKey: '', status: 'published' }
 const members = ['ほうとう組。', 'ボス', '司令官', '宝灯桃汁']
 const turnstileSitekey = '0x4AAAAAAEKTlDueM9B_l4qU'
 
@@ -52,9 +54,26 @@ function MomentCard({ item, admin, onEdit, onDelete }: { item: Moment, admin?: b
     {item.body && <p>{item.body}</p>}
     {!!item.tags.length && <div className="tags">{item.tags.map(tag => <span key={tag}>#{tag}</span>)}</div>}
     {item.sourceUrl && <a className="watch" href={item.sourceUrl} target="_blank" rel="noreferrer">↗ 元の投稿・場面を見る{item.timestampSeconds !== null && `（${clock(item.timestampSeconds)}）`}</a>}
-    {item.authorName && <small className="author">投稿: {item.authorName}</small>}
+    {item.authorName && <div className="author">{item.authorAvatarKey && <img src={`/media/${item.authorAvatarKey}`} alt="" loading="lazy" />}<small>投稿: {item.authorName}</small></div>}
     {admin && <div className="card-actions"><button className="secondary" onClick={onEdit}>編集</button><button className="danger" onClick={onDelete}>削除</button></div>}
   </article>
+}
+
+function Turnstile({ action }: { action: string }) {
+  const element = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let timer = 0
+    const render = () => {
+      if (window.turnstile && element.current) {
+        if (!element.current.childElementCount) window.turnstile.render(element.current, { sitekey: turnstileSitekey, action, language: 'ja' })
+        return
+      }
+      timer = window.setTimeout(render, 100)
+    }
+    render()
+    return () => window.clearTimeout(timer)
+  }, [action])
+  return <div ref={element} />
 }
 
 function Home() {
@@ -82,26 +101,12 @@ function Home() {
 }
 
 function MomentForm({ admin = false, initial = empty, onSaved }: { admin?: boolean, initial?: FormValue, onSaved?: () => void }) {
-  const turnstile = useRef<HTMLDivElement>(null)
   const [value, setValue] = useState(initial)
   const [tags, setTags] = useState(initial.tags.join(', '))
   const [image, setImage] = useState<File | null>(null)
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
   useEffect(() => { setValue(initial); setTags(initial.tags.join(', ')); setImage(null) }, [initial])
-  useEffect(() => {
-    if (admin) return
-    let timer = 0
-    const render = () => {
-      if (window.turnstile && turnstile.current) {
-        if (!turnstile.current.childElementCount) window.turnstile.render(turnstile.current, { sitekey: turnstileSitekey, action: 'submit_moment', language: 'ja' })
-        return
-      }
-      timer = window.setTimeout(render, 100)
-    }
-    render()
-    return () => window.clearTimeout(timer)
-  }, [admin])
   function set<K extends keyof FormValue>(key: K, next: FormValue[K]) { setValue(current => ({ ...current, [key]: next })) }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setMessage('')
@@ -142,16 +147,49 @@ function MomentForm({ admin = false, initial = empty, onSaved }: { admin?: boole
     <label>ひとこと<textarea maxLength={1000} rows={4} placeholder="この瞬間の好きなところ" value={value.body} onChange={e => set('body', e.target.value)} /></label>
     <label>画像（任意・5MBまで）<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={e => setImage(e.target.files?.[0] ?? null)} /></label>
     <label>タグ<input maxLength={200} placeholder="雑談, 山梨, 迷言" value={tags} onChange={e => setTags(e.target.value)} /></label>
-    <label>投稿者名（任意）<input maxLength={50} value={value.authorName} onChange={e => set('authorName', e.target.value)} /></label>
+    {admin && <label>投稿者名（任意）<input maxLength={50} value={value.authorName} onChange={e => set('authorName', e.target.value)} /></label>}
     {admin && <label>状態<select value={value.status} onChange={e => set('status', e.target.value as FormValue['status'])}><option value="draft">下書き</option><option value="published">公開</option></select></label>}
-    {!admin && <div ref={turnstile} />}
+    {!admin && <Turnstile action="submit_moment" />}
     <button disabled={saving}>{saving ? '保存中…' : admin && value.status === 'draft' ? '下書き保存' : '登録する 🌙'}</button>
     {message && <p className={message.includes('ました') || message.includes('ありがとう') ? 'success' : 'error'} role="status">{message}</p>}
   </form>
 }
 
+function Registration({ onRegistered }: { onRegistered: (profile: Profile) => void }) {
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setSaving(true); setMessage('')
+    try {
+      const form = new FormData(event.currentTarget)
+      form.set('turnstileToken', String(form.get('cf-turnstile-response') || ''))
+      const result = await request<{ profile: Profile }>('/api/profile', { method: 'POST', body: form })
+      onRegistered(result.profile)
+    } catch (e) {
+      window.turnstile?.reset()
+      setMessage((e as Error).message)
+    } finally { setSaving(false) }
+  }
+  return <form className="moment-form profile-form" onSubmit={submit}>
+    <h2>最初に参加登録</h2>
+    <p>自分のインターネット名と、アイコンまたは自分だとわかる画像で登録してください。この端末では次回から入力不要です。</p>
+    <label>表示名 <span className="required">必須</span><input name="displayName" required maxLength={50} autoComplete="nickname" /></label>
+    <label>アイコン画像 <span className="required">必須・5MBまで</span><input name="avatar" type="file" required accept="image/jpeg,image/png,image/webp,image/gif" /></label>
+    <Turnstile action="register_profile" />
+    <button disabled={saving}>{saving ? '登録中…' : '参加登録する 🌙'}</button>
+    {message && <p className="error" role="alert">{message}</p>}
+  </form>
+}
+
 function Submit() {
-  return <section className="page"><p className="eyebrow">SHARE A MEMORY</p><h1>思い出を投稿する</h1><p>YouTubeの時間入りURLなら再生位置も自動で残ります。<br />好きな瞬間や名言・迷言はリンクなしでも投稿できます。</p><MomentForm /></section>
+  const [profile, setProfile] = useState<Profile | null | undefined>()
+  const [error, setError] = useState('')
+  useEffect(() => { request<{ profile: Profile | null }>('/api/profile').then(result => setProfile(result.profile)).catch(e => setError(e.message)) }, [])
+  return <section className="page"><p className="eyebrow">SHARE A MEMORY</p><h1>思い出を投稿する</h1><p>YouTubeの時間入りURLなら再生位置も自動で残ります。<br />好きな瞬間や名言・迷言はリンクなしでも投稿できます。</p>
+    {error && <p className="error" role="alert">{error}</p>}
+    {profile === null && <Registration onRegistered={setProfile} />}
+    {profile && <><div className="profile"><img src={`/media/${profile.avatarKey}`} alt="" /><span><small>投稿者</small>{profile.displayName}</span></div><MomentForm /></>}
+  </section>
 }
 
 function point(item: Moment, index: number) {

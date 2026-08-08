@@ -33,7 +33,7 @@ npm run db:remote
 npx wrangler secret put TURNSTILE_SECRET
 ```
 
-公開先は `https://202608.momoshimin-saikainohi.anatofuz.net` です。管理画面と管理APIは Cloudflare Access で保護します。公開投稿は Turnstile で検証し、画像は5MBまでで R2 の `houtougumi-memory-images` に保存します。既存の同名D1を使う場合は、その `database_id` を `wrangler.jsonc` に追加してください。
+公開先は `https://202608.momoshimin-saikainohi.anatofuz.net` です。管理画面と管理APIは Cloudflare Access で保護します。参加者は表示名とアイコン画像で初回登録し、同じブラウザではHttpOnly Cookieで識別します。登録と公開投稿は Turnstile で検証し、画像は5MBまでで R2 の `houtougumi-memory-images` に保存します。既存の同名D1を使う場合は、その `database_id` を `wrangler.jsonc` に追加してください。
 
 ## 確認
 

@@ -1,0 +1,9 @@
+CREATE TABLE profiles (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  display_name TEXT NOT NULL,
+  avatar_key TEXT NOT NULL,
+  session_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE moments ADD COLUMN author_avatar_key TEXT NOT NULL DEFAULT '';

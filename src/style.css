@@ -38,7 +38,8 @@ h1 { margin: .4rem 0 1rem; font-size: clamp(2.25rem, 8vw, 4.25rem); line-height:
 .moment-image { width: calc(100% + 2.5rem); max-height: 420px; margin: .5rem -1.25rem 1rem; object-fit: cover; }
 .tags { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: 1rem; color: #826b6c; font-size: .78rem; }
 .watch { margin-top: auto; color: var(--deep); font-weight: 800; }
-.author { margin-top: .7rem; color: #806f70; }
+.author { display: flex; align-items: center; gap: .45rem; margin-top: .7rem; color: #806f70; }
+.author img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; }
 .card-actions { display: flex; width: 100%; gap: .5rem; margin-top: 1rem; }
 .card-actions button { flex: 1; }
 .secondary { border: 1px solid #d9c2bc; color: var(--deep); background: white; }
@@ -47,6 +48,11 @@ h1 { margin: .4rem 0 1rem; font-size: clamp(2.25rem, 8vw, 4.25rem); line-height:
 .page h1 { font-size: clamp(2rem, 8vw, 3.2rem); }
 .page > p { line-height: 1.8; }
 .moment-form { display: grid; gap: 1rem; margin-top: 2rem; padding: 1.25rem; border: 1px solid #eadbd0; border-radius: 24px; background: white; }
+.profile-form h2, .profile-form p { margin: 0; }
+.profile-form p { color: #806f70; line-height: 1.7; }
+.profile { display: flex; align-items: center; gap: .75rem; margin-top: 1.5rem; padding: .8rem 1rem; border: 1px solid #eadbd0; border-radius: 16px; background: white; font-weight: 800; }
+.profile img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; }
+.profile small { display: block; color: #806f70; font-size: .7rem; font-weight: 600; }
 label { display: grid; gap: .45rem; font-size: .87rem; font-weight: 800; }
 input, select, textarea { width: 100%; min-height: 48px; padding: .75rem; border: 1px solid #cfbab5; border-radius: 12px; color: var(--ink); background: #fffdfa; }
 textarea { resize: vertical; }
