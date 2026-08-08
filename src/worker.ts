@@ -1,12 +1,12 @@
 import { Hono } from 'hono'
 import { bodyLimit } from 'hono/body-limit'
-import { basicAuth } from 'hono/basic-auth'
 import { HTTPException } from 'hono/http-exception'
-import { timingSafeEqual } from 'node:crypto'
-import type { MiddlewareHandler } from 'hono'
+import { secureHeaders } from 'hono/secure-headers'
+import type { Context } from 'hono'
+import { turnstileValid, type TurnstileResult } from './turnstile'
 import { youtubeSeconds } from './youtube'
 
-type Bindings = Env & { ADMIN_USER?: string, ADMIN_PASSWORD?: string }
+type Bindings = Env & { TURNSTILE_SECRET?: string }
 type MomentInput = {
   kind: 'archive' | 'quote' | 'moment'
   member: string
@@ -21,9 +21,26 @@ type MomentInput = {
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
+app.use('*', secureHeaders({
+  contentSecurityPolicy: {
+    defaultSrc: ["'self'"],
+    baseUri: ["'self'"],
+    connectSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://cloudflareinsights.com'],
+    fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+    formAction: ["'self'"],
+    frameAncestors: ["'none'"],
+    frameSrc: ['https://challenges.cloudflare.com'],
+    imgSrc: ["'self'", 'data:'],
+    objectSrc: ["'none'"],
+    scriptSrc: ["'self'", 'https://challenges.cloudflare.com', 'https://static.cloudflareinsights.com'],
+    styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+  },
+  xContentTypeOptions: 'nosniff',
+  xFrameOptions: 'DENY',
+}))
 const smallBody = bodyLimit({ maxSize: 16 * 1024 })
 const imageBody = bodyLimit({ maxSize: 5 * 1024 * 1024 + 64 * 1024 })
-app.use('/api/*', (c, next) => c.req.path === '/api/images' ? imageBody(c, next) : smallBody(c, next))
+app.use('/api/*', (c, next) => ['/api/admin/images', '/api/moments'].includes(c.req.path) ? imageBody(c, next) : smallBody(c, next))
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) return error.getResponse()
@@ -31,28 +48,12 @@ app.onError((error, c) => {
   return c.json({ error: '処理に失敗しました' }, 500)
 })
 
-async function secureEqual(provided: string, expected: string): Promise<boolean> {
-  const encoder = new TextEncoder()
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest('SHA-256', encoder.encode(provided)),
-    crypto.subtle.digest('SHA-256', encoder.encode(expected)),
-  ])
-  return timingSafeEqual(new Uint8Array(a), new Uint8Array(b))
+async function asset(c: Context<{ Bindings: Bindings }>) {
+  const response = await c.env.ASSETS.fetch(c.req.raw)
+  return new Response(response.body, response)
 }
-
-const requireAdmin: MiddlewareHandler<{ Bindings: Bindings }> = async (c, next) => {
-  if (!c.env.ADMIN_USER || !c.env.ADMIN_PASSWORD) throw new HTTPException(503, { message: '管理者認証が未設定です' })
-  return basicAuth({
-    realm: 'ほうとう組。思い出広場 管理',
-    verifyUser: async (username, password) => (await secureEqual(username, c.env.ADMIN_USER!)) && (await secureEqual(password, c.env.ADMIN_PASSWORD!)),
-  })(c, next)
-}
-
-app.use('/admin', requireAdmin)
-app.use('/admin/*', requireAdmin)
-app.use('/api/admin/*', requireAdmin)
-app.get('/admin', (c) => c.env.ASSETS.fetch(c.req.raw))
-app.get('/admin/*', (c) => c.env.ASSETS.fetch(c.req.raw))
+app.get('/admin', asset)
+app.get('/admin/*', asset)
 
 function text(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -97,6 +98,27 @@ async function input(request: Request, admin: boolean): Promise<MomentInput> {
   }
 }
 
+async function verifyTurnstile(c: Context<{ Bindings: Bindings }>, token: string) {
+  if (!c.env.TURNSTILE_SECRET) throw new HTTPException(503, { message: '投稿認証が未設定です' })
+  const form = new FormData()
+  form.set('secret', c.env.TURNSTILE_SECRET)
+  form.set('response', token.slice(0, 2048))
+  const ip = c.req.header('CF-Connecting-IP')
+  if (ip) form.set('remoteip', ip)
+  let result: TurnstileResult
+  try {
+    const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST', body: form, signal: AbortSignal.timeout(5000),
+    })
+    result = await response.json()
+  } catch {
+    throw new HTTPException(503, { message: '投稿認証に失敗しました。もう一度お試しください' })
+  }
+  if (!turnstileValid(result, c.env.TURNSTILE_HOSTNAME)) {
+    throw new HTTPException(403, { message: '投稿認証に失敗しました。もう一度お試しください' })
+  }
+}
+
 const columns = 'id, kind, member, title, body, source_url, timestamp_seconds, tags, author_name, image_key, status, created_at, updated_at'
 
 function moment(row: Record<string, unknown>) {
@@ -131,10 +153,7 @@ async function insert(db: D1Database, data: MomentInput) {
   return find(db, Number(result.meta.last_row_id))
 }
 
-app.post('/api/images', async (c) => {
-  const form = await c.req.formData()
-  const file = form.get('image')
-  if (!(file instanceof File)) throw new HTTPException(400, { message: '画像を選択してください' })
+async function storeImage(bucket: R2Bucket, file: File) {
   if (file.size > 5 * 1024 * 1024) throw new HTTPException(413, { message: '画像は5MB以下にしてください' })
   const data = await file.arrayBuffer()
   const bytes = new Uint8Array(data)
@@ -147,8 +166,15 @@ app.post('/api/images', async (c) => {
   if (!type) throw new HTTPException(400, { message: 'JPEG、PNG、WebP、GIFのみ投稿できます' })
   const [contentType, extension] = type
   const key = `${crypto.randomUUID()}.${extension}`
-  await c.env.IMAGES.put(key, data, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } })
-  return c.json({ imageKey: key, imageUrl: `/media/${key}` }, 201)
+  await bucket.put(key, data, { httpMetadata: { contentType, cacheControl: 'public, max-age=31536000, immutable' } })
+  return key
+}
+
+app.post('/api/admin/images', async (c) => {
+  const file = (await c.req.formData()).get('image')
+  if (!(file instanceof File)) throw new HTTPException(400, { message: '画像を選択してください' })
+  const imageKey = await storeImage(c.env.IMAGES, file)
+  return c.json({ imageKey, imageUrl: `/media/${imageKey}` }, 201)
 })
 
 app.get('/media/:key', async (c) => {
@@ -174,7 +200,15 @@ app.get('/api/moments/random', async (c) => {
   return row ? c.json(moment(row)) : c.json({ error: 'まだ思い出がありません' }, 404)
 })
 
-app.post('/api/moments', async (c) => c.json(await insert(c.env.DB, await input(c.req.raw, false)), 201))
+app.post('/api/moments', async (c) => {
+  const form = await c.req.formData()
+  await verifyTurnstile(c, text(form.get('turnstileToken'), 2048))
+  const payload = text(form.get('payload'), 16 * 1024)
+  const data = await input(new Request('https://internal', { method: 'POST', body: payload }), false)
+  const file = form.get('image')
+  if (file instanceof File && file.size) data.imageKey = await storeImage(c.env.IMAGES, file)
+  return c.json(await insert(c.env.DB, data), 201)
+})
 
 app.get('/api/admin/moments', async (c) => {
   const result = await c.env.DB.prepare(`SELECT ${columns} FROM moments ORDER BY created_at DESC LIMIT 500`).all()
@@ -199,5 +233,7 @@ app.delete('/api/admin/moments/:id', async (c) => {
   const result = await c.env.DB.prepare('DELETE FROM moments WHERE id = ?').bind(id).run()
   return result.meta.changes ? c.body(null, 204) : c.json({ error: '思い出が見つかりません' }, 404)
 })
+
+app.all('*', asset)
 
 export default app

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Route, Routes } from 'react-router-dom'
 import { clock, youtubeSeconds } from './youtube'
 
@@ -20,6 +20,11 @@ type Moment = {
 type FormValue = Omit<Moment, 'id' | 'createdAt'>
 const empty: FormValue = { kind: 'moment', member: 'ほうとう組。', title: '', body: '', sourceUrl: '', timestampSeconds: null, tags: [], authorName: '', imageKey: '', status: 'published' }
 const members = ['ほうとう組。', 'ボス', '司令官', '宝灯桃汁']
+const turnstileSitekey = '0x4AAAAAAEKTlDueM9B_l4qU'
+
+declare global {
+  interface Window { turnstile?: { render: (element: HTMLElement, options: Record<string, string>) => string, reset: () => void } }
+}
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options)
@@ -77,31 +82,55 @@ function Home() {
 }
 
 function MomentForm({ admin = false, initial = empty, onSaved }: { admin?: boolean, initial?: FormValue, onSaved?: () => void }) {
+  const turnstile = useRef<HTMLDivElement>(null)
   const [value, setValue] = useState(initial)
   const [tags, setTags] = useState(initial.tags.join(', '))
   const [image, setImage] = useState<File | null>(null)
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
   useEffect(() => { setValue(initial); setTags(initial.tags.join(', ')); setImage(null) }, [initial])
+  useEffect(() => {
+    if (admin) return
+    let timer = 0
+    const render = () => {
+      if (window.turnstile && turnstile.current) {
+        if (!turnstile.current.childElementCount) window.turnstile.render(turnstile.current, { sitekey: turnstileSitekey, action: 'submit_moment', language: 'ja' })
+        return
+      }
+      timer = window.setTimeout(render, 100)
+    }
+    render()
+    return () => window.clearTimeout(timer)
+  }, [admin])
   function set<K extends keyof FormValue>(key: K, next: FormValue[K]) { setValue(current => ({ ...current, [key]: next })) }
-  async function submit(event: FormEvent) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setSaving(true); setMessage('')
     try {
-      let imageKey = value.imageKey
-      if (image) {
-        const form = new FormData()
-        form.append('image', image)
-        imageKey = (await request<{ imageKey: string }>('/api/images', { method: 'POST', body: form })).imageKey
-      }
-      const body = JSON.stringify({ ...value, imageKey, timestampSeconds: youtubeSeconds(value.sourceUrl), tags: tags.split(',').map(t => t.trim()).filter(Boolean) })
+      const data = { ...value, timestampSeconds: youtubeSeconds(value.sourceUrl), tags: tags.split(',').map(t => t.trim()).filter(Boolean) }
       const id = (initial as FormValue & { id?: number }).id
-      await request(admin ? `/api/admin/moments${id ? `/${id}` : ''}` : '/api/moments', {
-        method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body,
-      })
+      if (admin) {
+        if (image) {
+          const form = new FormData()
+          form.append('image', image)
+          data.imageKey = (await request<{ imageKey: string }>('/api/admin/images', { method: 'POST', body: form })).imageKey
+        }
+        await request(`/api/admin/moments${id ? `/${id}` : ''}`, {
+          method: id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+        })
+      } else {
+        const form = new FormData()
+        form.append('payload', JSON.stringify(data))
+        form.append('turnstileToken', String(new FormData(event.currentTarget).get('cf-turnstile-response') || ''))
+        if (image) form.append('image', image)
+        await request('/api/moments', { method: 'POST', body: form })
+      }
       setMessage(admin ? '保存しました' : '投稿しました。ありがとう！')
       if (!id) { setValue(empty); setTags('') }
       onSaved?.()
-    } catch (e) { setMessage((e as Error).message) } finally { setSaving(false) }
+    } catch (e) {
+      if (!admin) window.turnstile?.reset()
+      setMessage((e as Error).message)
+    } finally { setSaving(false) }
   }
   const seconds = youtubeSeconds(value.sourceUrl)
   return <form className="moment-form" onSubmit={submit}>
@@ -115,6 +144,7 @@ function MomentForm({ admin = false, initial = empty, onSaved }: { admin?: boole
     <label>タグ<input maxLength={200} placeholder="雑談, 山梨, 迷言" value={tags} onChange={e => setTags(e.target.value)} /></label>
     <label>投稿者名（任意）<input maxLength={50} value={value.authorName} onChange={e => set('authorName', e.target.value)} /></label>
     {admin && <label>状態<select value={value.status} onChange={e => set('status', e.target.value as FormValue['status'])}><option value="draft">下書き</option><option value="published">公開</option></select></label>}
+    {!admin && <div ref={turnstile} />}
     <button disabled={saving}>{saving ? '保存中…' : admin && value.status === 'draft' ? '下書き保存' : '登録する 🌙'}</button>
     {message && <p className={message.includes('ました') || message.includes('ありがとう') ? 'success' : 'error'} role="status">{message}</p>}
   </form>
